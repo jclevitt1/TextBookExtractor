@@ -123,6 +123,7 @@ def _import_workers():
     from .workers import w3_toc_structure  # noqa: F401
     from .workers import w4_granularity  # noqa: F401
     from .workers import w5_extractor  # noqa: F401
+    from .workers import w6_coverage  # noqa: F401
 
 
 if __name__ == "__main__":
