@@ -12,6 +12,7 @@ from ..workers import get_worker
 # Force-import all worker modules so they register themselves.
 # Workers are added here as they're implemented.
 from ..workers import w1_s3_fetch  # noqa: F401
+from ..workers import w2_toc_raw  # noqa: F401
 
 
 def handler(event, context):
