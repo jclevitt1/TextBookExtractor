@@ -60,10 +60,11 @@ def run_worker(worker_name, input_path, output_path):
 @cli.command()
 @click.option("--input", "-i", "input_path", required=True, help="Path to pipeline input JSON")
 @click.option("--through", "-t", default=None, help="Stop after this worker (e.g. w4, w2_toc_raw)")
-@click.option("--limit", "-l", type=int, default=None, help="W5 fan-out: only process N units")
+@click.option("--limit", "-l", type=int, default=None, help="W5 fan-out: only process first N units")
+@click.option("--range", "-r", "w5_range", default=None, help="W5 fan-out: process index range (e.g. 5-10, 0-2, 42)")
 @click.option("--output", "-o", "output_path", default=None, help="Write final state JSON to file")
 @click.option("--state-dir", "-s", default=None, help="Dir to save intermediate state after each worker")
-def run_pipeline(input_path, through, limit, output_path, state_dir):
+def run_pipeline(input_path, through, limit, w5_range, output_path, state_dir):
     """Run the full pipeline (or partial with --through).
 
     Examples:
@@ -71,8 +72,14 @@ def run_pipeline(input_path, through, limit, output_path, state_dir):
         # Run W1-W4, inspect manifest before spending on extraction
         python -m textbook_extraction run-pipeline -i input.json --through w4
 
-        # Run full pipeline but only extract 3 sections (test quality)
+        # Run full pipeline but only extract first 3 sections
         python -m textbook_extraction run-pipeline -i input.json --through w5 --limit 3
+
+        # Extract only sections 5 through 10
+        python -m textbook_extraction run-pipeline -i input.json --through w5 --range 5-10
+
+        # Extract just one section by index
+        python -m textbook_extraction run-pipeline -i input.json --through w5 --range 42
 
         # Full pipeline, save intermediate state for debugging
         python -m textbook_extraction run-pipeline -i input.json -s ./debug_state/
@@ -91,6 +98,7 @@ def run_pipeline(input_path, through, limit, output_path, state_dir):
         settings,
         through=through,
         limit=limit,
+        w5_range=w5_range,
         state_dir=state_dir,
     )
 
@@ -114,6 +122,7 @@ def _import_workers():
     from .workers import w2_toc_raw  # noqa: F401
     from .workers import w3_toc_structure  # noqa: F401
     from .workers import w4_granularity  # noqa: F401
+    from .workers import w5_extractor  # noqa: F401
 
 
 if __name__ == "__main__":

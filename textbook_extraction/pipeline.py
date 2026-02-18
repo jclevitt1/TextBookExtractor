@@ -1,7 +1,7 @@
 """Local pipeline runner — chains workers sequentially with state passing.
 
 Mirrors the Step Functions state machine but runs locally, with controls
-for stopping early (--through) and limiting fan-out (--limit).
+for stopping early (--through) and limiting/ranging fan-out (--limit, --range).
 """
 import json
 from pathlib import Path
@@ -100,12 +100,23 @@ def build_worker_event(worker_name: str, state: dict) -> dict:
         raise ValueError(f"Unknown worker: {worker_name}")
 
 
+def parse_range(range_str: str) -> tuple[int, int]:
+    """Parse a range string like '5-10', '5', or '0-2' into (start, end) inclusive."""
+    if "-" in range_str:
+        parts = range_str.split("-", 1)
+        return int(parts[0]), int(parts[1])
+    else:
+        idx = int(range_str)
+        return idx, idx
+
+
 def run_pipeline(
     pipeline_input: dict,
     settings: Settings,
     *,
     through: str | None = None,
     limit: int | None = None,
+    w5_range: str | None = None,
     state_dir: str | None = None,
 ) -> dict:
     """Run the pipeline locally, chaining workers sequentially.
@@ -114,7 +125,8 @@ def run_pipeline(
         pipeline_input: Initial pipeline input dict.
         settings: App settings.
         through: Stop after this worker (e.g. "w4" or "w4_granularity").
-        limit: For W5, only process this many extraction units.
+        limit: For W5, only process the first N extraction units.
+        w5_range: For W5, process a specific range (e.g. "5-10", "0-2", "42").
         state_dir: If set, write intermediate state JSON after each worker.
 
     Returns:
@@ -134,7 +146,7 @@ def run_pipeline(
         console.print(f"\n[bold]{'=' * 60}[/bold]")
 
         if worker_name == "w5_extractor":
-            _run_w5_fanout(state, settings, limit=limit)
+            _run_w5_fanout(state, settings, limit=limit, w5_range=w5_range)
         else:
             event = build_worker_event(worker_name, state)
             worker = get_worker(worker_name)(settings)
@@ -154,32 +166,53 @@ def run_pipeline(
     return state
 
 
-def _run_w5_fanout(state: dict, settings: Settings, limit: int | None = None):
+def _run_w5_fanout(
+    state: dict,
+    settings: Settings,
+    limit: int | None = None,
+    w5_range: str | None = None,
+):
     """Run W5 for each extraction unit, sequentially.
 
     In Step Functions this is a Map state with MaxConcurrency=10.
     Locally we run sequentially for predictability and cost control.
-    """
-    units = state["w4"]["extraction_units"]
-    total = len(units)
 
-    if limit:
-        units = units[:limit]
-        console.print(
-            f"[bold blue]W5: Granular Extractor[/bold blue] — "
-            f"processing {len(units)}/{total} units (--limit {limit})"
-        )
+    Supports:
+        --limit 3       → first 3 units
+        --range 5-10    → units at indices 5 through 10 (inclusive)
+        --range 42      → just unit 42
+    """
+    all_units = state["w4"]["extraction_units"]
+    total = len(all_units)
+
+    # Determine which units to process
+    if w5_range:
+        start, end = parse_range(w5_range)
+        start = max(0, start)
+        end = min(end, total - 1)
+        units = all_units[start:end + 1]
+        label = f"range {start}-{end}"
+    elif limit:
+        units = all_units[:limit]
+        label = f"limit {limit}"
     else:
-        console.print(
-            f"[bold blue]W5: Granular Extractor[/bold blue] — "
-            f"processing all {total} units"
-        )
+        units = all_units
+        label = "all"
+
+    console.print(
+        f"[bold blue]W5: Granular Extractor[/bold blue] — "
+        f"processing {len(units)}/{total} units ({label})"
+    )
 
     results = []
     worker = get_worker("w5_extractor")(settings)
 
     for i, unit in enumerate(units):
-        console.print(f"\n  [dim]--- Unit {i + 1}/{len(units)}: {unit.get('title', '?')} ---[/dim]")
+        global_idx = all_units.index(unit) if w5_range else i
+        console.print(
+            f"\n  [dim]--- Unit {global_idx} ({i + 1}/{len(units)}): "
+            f"{unit.get('title', '?')} ---[/dim]"
+        )
         event = {
             "worker": "w5_extractor",
             "textbook_s3_uri": state["textbook_s3_uri"],

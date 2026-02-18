@@ -15,6 +15,7 @@ from ..workers import w1_s3_fetch  # noqa: F401
 from ..workers import w2_toc_raw  # noqa: F401
 from ..workers import w3_toc_structure  # noqa: F401
 from ..workers import w4_granularity  # noqa: F401
+from ..workers import w5_extractor  # noqa: F401
 
 
 def handler(event, context):
