@@ -112,6 +112,7 @@ def _import_workers():
     """Import all worker modules to trigger registration."""
     from .workers import w1_s3_fetch  # noqa: F401
     from .workers import w2_toc_raw  # noqa: F401
+    from .workers import w3_toc_structure  # noqa: F401
 
 
 if __name__ == "__main__":
