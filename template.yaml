@@ -1,0 +1,74 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Textbook Extraction Pipeline — Step Functions + Lambda
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, prod]
+  AnthropicApiKey:
+    Type: String
+    NoEcho: true
+
+Globals:
+  Function:
+    Timeout: 900  # 15 minutes max for Lambda
+    MemorySize: 3072  # 3 GB for PDF processing
+    Environment:
+      Variables:
+        STAGE: !Ref Stage
+        ANTHROPIC_API_KEY: !Ref AnthropicApiKey
+        TEXTBOOK_OUTPUT_BUCKET: !Ref OutputBucket
+
+Resources:
+
+  # --- S3 ---
+
+  OutputBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub textbook-extraction-${Stage}-${AWS::AccountId}
+
+  # --- Lambda ---
+
+  WorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub textbook-extraction-worker-${Stage}
+      PackageType: Image
+      Architectures: [x86_64]
+      Policies:
+        - S3FullAccessPolicy:
+            BucketName: !Ref OutputBucket
+        - S3ReadPolicy:
+            BucketName: "*"  # Read textbooks from any bucket
+      Events: {}  # Invoked by Step Functions, not directly
+    Metadata:
+      DockerTag: !Sub ${Stage}
+      DockerContext: .
+      Dockerfile: Dockerfile
+
+  # --- Step Functions ---
+
+  ExtractionStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Name: !Sub textbook-extraction-${Stage}
+      DefinitionUri: statemachine/textbook_extraction.asl.json
+      DefinitionSubstitutions:
+        WorkerFunctionArn: !GetAtt WorkerFunction.Arn
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref WorkerFunction
+
+Outputs:
+  StateMachineArn:
+    Description: Step Functions state machine ARN
+    Value: !Ref ExtractionStateMachine
+  WorkerFunctionArn:
+    Description: Worker Lambda ARN
+    Value: !GetAtt WorkerFunction.Arn
+  OutputBucketName:
+    Description: S3 bucket for extraction outputs
+    Value: !Ref OutputBucket

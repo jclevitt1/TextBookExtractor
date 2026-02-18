@@ -1,0 +1,146 @@
+{
+  "Comment": "Textbook Extraction Pipeline — 7 workers, fan-out on W5",
+  "StartAt": "W1_S3Fetch",
+  "States": {
+    "W1_S3Fetch": {
+      "Type": "Task",
+      "Resource": "${WorkerFunctionArn}",
+      "Parameters": {
+        "worker": "w1_s3_fetch",
+        "textbook_s3_uri.$": "$.textbook_s3_uri",
+        "output_s3_prefix.$": "$.output_s3_prefix"
+      },
+      "ResultPath": "$.w1",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "W2_TOCRawExtract"
+    },
+
+    "W2_TOCRawExtract": {
+      "Type": "Task",
+      "Resource": "${WorkerFunctionArn}",
+      "Parameters": {
+        "worker": "w2_toc_raw",
+        "textbook_s3_uri.$": "$.textbook_s3_uri",
+        "toc_start_page.$": "$.toc_start_page",
+        "toc_end_page.$": "$.toc_end_page",
+        "output_s3_prefix.$": "$.output_s3_prefix"
+      },
+      "ResultPath": "$.w2",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "W3_TOCStructure"
+    },
+
+    "W3_TOCStructure": {
+      "Type": "Task",
+      "Resource": "${WorkerFunctionArn}",
+      "Parameters": {
+        "worker": "w3_toc_structure",
+        "toc_raw_uri.$": "$.w2.toc_raw_uri",
+        "output_s3_prefix.$": "$.output_s3_prefix"
+      },
+      "ResultPath": "$.w3",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "W4_Granularity"
+    },
+
+    "W4_Granularity": {
+      "Type": "Task",
+      "Resource": "${WorkerFunctionArn}",
+      "Parameters": {
+        "worker": "w4_granularity",
+        "toc_structured_uri.$": "$.w3.toc_structured_uri",
+        "page_1_offset.$": "$.page_1_offset",
+        "page_count.$": "$.w1.page_count",
+        "output_s3_prefix.$": "$.output_s3_prefix"
+      },
+      "ResultPath": "$.w4",
+      "Next": "W5_FanOut"
+    },
+
+    "W5_FanOut": {
+      "Type": "Map",
+      "ItemsPath": "$.w4.extraction_units",
+      "MaxConcurrency": 10,
+      "Parameters": {
+        "worker": "w5_extractor",
+        "textbook_s3_uri.$": "$.textbook_s3_uri",
+        "output_s3_prefix.$": "$.output_s3_prefix",
+        "unit.$": "$$.Map.Item.Value"
+      },
+      "ResultPath": "$.w5",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 15,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "W6_CoverageCleanup"
+    },
+
+    "W6_CoverageCleanup": {
+      "Type": "Task",
+      "Resource": "${WorkerFunctionArn}",
+      "Parameters": {
+        "worker": "w6_coverage",
+        "textbook_s3_uri.$": "$.textbook_s3_uri",
+        "toc_structured_uri.$": "$.w3.toc_structured_uri",
+        "extraction_manifest_uri.$": "$.w4.extraction_manifest_uri",
+        "page_1_offset.$": "$.page_1_offset",
+        "page_count.$": "$.w1.page_count",
+        "output_s3_prefix.$": "$.output_s3_prefix"
+      },
+      "ResultPath": "$.w6",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "W7_SectionKeys"
+    },
+
+    "W7_SectionKeys": {
+      "Type": "Task",
+      "Resource": "${WorkerFunctionArn}",
+      "Parameters": {
+        "worker": "w7_section_keys",
+        "output_s3_prefix.$": "$.output_s3_prefix"
+      },
+      "ResultPath": "$.w7",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "End": true
+    }
+  }
+}
