@@ -17,6 +17,7 @@ from ..workers import w3_toc_structure  # noqa: F401
 from ..workers import w4_granularity  # noqa: F401
 from ..workers import w5_extractor  # noqa: F401
 from ..workers import w6_coverage  # noqa: F401
+from ..workers import w7_section_keys  # noqa: F401
 
 
 def handler(event, context):
