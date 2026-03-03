@@ -97,7 +97,7 @@ class W3TOCStructure(BaseWorker):
         console.print(f"  Structuring {len(entries)} flat entries...")
 
         # Send to Claude for structuring
-        client = claude_mod.ClaudeClient(self.settings)
+        client = claude_mod.get_client(self.settings, self.worker_name)
         entries_json = json.dumps(entries, indent=2)
 
         response = client.call(

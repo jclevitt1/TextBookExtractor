@@ -19,8 +19,9 @@ PIPELINE_ORDER = [
     "w3_toc_structure",
     "w4_granularity",
     "w5_extractor",
-    "w6_coverage",
-    "w7_section_keys",
+    "w6_toc_enrich",
+    "w7_coverage",
+    "w8_section_keys",
 ]
 
 # Short aliases so you can do --through w4 instead of --through w4_granularity
@@ -30,8 +31,9 @@ WORKER_ALIASES = {
     "w3": "w3_toc_structure",
     "w4": "w4_granularity",
     "w5": "w5_extractor",
-    "w6": "w6_coverage",
-    "w7": "w7_section_keys",
+    "w6": "w6_toc_enrich",
+    "w7": "w7_coverage",
+    "w8": "w8_section_keys",
 }
 
 
@@ -79,9 +81,17 @@ def build_worker_event(worker_name: str, state: dict) -> dict:
 
     # W5 is handled specially (fan-out) — see run_pipeline()
 
-    elif worker_name == "w6_coverage":
+    elif worker_name == "w6_toc_enrich":
         return {
-            "worker": "w6_coverage",
+            "worker": "w6_toc_enrich",
+            "toc_structured_uri": state["w3"]["toc_structured_uri"],
+            "w5_results": state["w5"],
+            "output_s3_prefix": state["output_s3_prefix"],
+        }
+
+    elif worker_name == "w7_coverage":
+        return {
+            "worker": "w7_coverage",
             "textbook_s3_uri": state["textbook_s3_uri"],
             "toc_structured_uri": state["w3"]["toc_structured_uri"],
             "extraction_manifest_uri": state["w4"]["extraction_manifest_uri"],
@@ -90,9 +100,9 @@ def build_worker_event(worker_name: str, state: dict) -> dict:
             "output_s3_prefix": state["output_s3_prefix"],
         }
 
-    elif worker_name == "w7_section_keys":
+    elif worker_name == "w8_section_keys":
         return {
-            "worker": "w7_section_keys",
+            "worker": "w8_section_keys",
             "output_s3_prefix": state["output_s3_prefix"],
         }
 
@@ -115,6 +125,7 @@ def run_pipeline(
     settings: Settings,
     *,
     through: str | None = None,
+    resume_from: str | None = None,
     limit: int | None = None,
     w5_range: str | None = None,
     state_dir: str | None = None,
@@ -125,6 +136,7 @@ def run_pipeline(
         pipeline_input: Initial pipeline input dict.
         settings: App settings.
         through: Stop after this worker (e.g. "w4" or "w4_granularity").
+        resume_from: Start from this worker, using pipeline_input as pre-accumulated state.
         limit: For W5, only process the first N extraction units.
         w5_range: For W5, process a specific range (e.g. "5-10", "0-2", "42").
         state_dir: If set, write intermediate state JSON after each worker.
@@ -136,13 +148,25 @@ def run_pipeline(
     if stop_after and stop_after not in PIPELINE_ORDER:
         raise ValueError(f"Unknown worker: {stop_after}. Options: {PIPELINE_ORDER}")
 
+    start_from = resolve_worker_name(resume_from) if resume_from else None
+    if start_from and start_from not in PIPELINE_ORDER:
+        raise ValueError(f"Unknown worker: {start_from}. Options: {PIPELINE_ORDER}")
+
     state = dict(pipeline_input)
 
     if state_dir:
         Path(state_dir).mkdir(parents=True, exist_ok=True)
         _save_state(state, state_dir, "00_input")
 
+    skipping = start_from is not None
+
     for worker_name in PIPELINE_ORDER:
+        if skipping:
+            if worker_name == start_from:
+                skipping = False
+            else:
+                continue
+
         console.print(f"\n[bold]{'=' * 60}[/bold]")
 
         if worker_name == "w5_extractor":
@@ -172,16 +196,26 @@ def _run_w5_fanout(
     limit: int | None = None,
     w5_range: str | None = None,
 ):
-    """Run W5 for each extraction unit, sequentially.
+    """Run W5 for each extraction unit, sequentially with consistency loop.
 
-    In Step Functions this is a Map state with MaxConcurrency=10.
-    Locally we run sequentially for predictability and cost control.
+    In Step Functions this is split into: first 2 sequential, remaining parallel.
+    Locally we run all sequentially with the same consistency loop.
+
+    Consistency loop:
+        - Sections 0-1: extract without previous_attributes
+        - After section 1: compute union of all field names
+        - Sections 2+: extract WITH previous_attributes (the union)
 
     Supports:
         --limit 3       → first 3 units
         --range 5-10    → units at indices 5 through 10 (inclusive)
         --range 42      → just unit 42
     """
+    from .utils import s3
+
+    # Fields to exclude from schema union (metadata, always present)
+    EXCLUDE_FIELDS = {"title", "likely_hw_exercise_attributes", "most_likely_hw_exercise_attribute"}
+
     all_units = state["w4"]["extraction_units"]
     total = len(all_units)
 
@@ -206,6 +240,7 @@ def _run_w5_fanout(
 
     results = []
     worker = get_worker("w5_extractor")(settings)
+    accumulated_attributes = set()
 
     for i, unit in enumerate(units):
         global_idx = all_units.index(unit) if w5_range else i
@@ -213,14 +248,32 @@ def _run_w5_fanout(
             f"\n  [dim]--- Unit {global_idx} ({i + 1}/{len(units)}): "
             f"{unit.get('title', '?')} ---[/dim]"
         )
+
+        # Build event with consistency loop
         event = {
             "worker": "w5_extractor",
             "textbook_s3_uri": state["textbook_s3_uri"],
             "output_s3_prefix": state["output_s3_prefix"],
             "unit": unit,
         }
+
+        # Starting from section 2 (index 2), pass accumulated attributes
+        if i >= 2 and accumulated_attributes:
+            event["previous_attributes"] = sorted(accumulated_attributes)
+
         result = worker.execute(event)
         results.append(result)
+
+        # Update accumulated attributes from this section's content
+        # (Only after the first 2 sections to establish the schema)
+        if i < 2 and result.get("content_uri"):
+            try:
+                content = s3.read_json(result["content_uri"])
+                attrs = set(content.keys()) - EXCLUDE_FIELDS
+                accumulated_attributes.update(attrs)
+                console.print(f"  [dim]Schema accumulated: {sorted(accumulated_attributes)}[/dim]")
+            except Exception as e:
+                console.print(f"  [yellow]Warning: couldn't read content for schema: {e}[/yellow]")
 
     state["w5"] = results
 

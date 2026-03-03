@@ -1,4 +1,4 @@
-"""Worker 7: Section Keys Generator — generate self-describing metadata for all content.
+"""Worker 8: Section Keys Generator — generate self-describing metadata for all content.
 
 Batch LLM pass over all content.json files (W5 + W6) to produce
 section_keys metadata and normalize inconsistent field names.
@@ -31,15 +31,15 @@ def _list_content_files(s3_client, bucket: str, prefix: str) -> list[str]:
 
 
 @register_worker
-class W7SectionKeys(BaseWorker):
+class W8SectionKeys(BaseWorker):
     """Generate section_keys metadata for all extracted content."""
 
-    worker_name = "w7_section_keys"
+    worker_name = "w8_section_keys"
 
     def execute(self, event: dict) -> dict:
         output_prefix = event["output_s3_prefix"]
 
-        console.print("[bold blue]W7: Section Keys Generator[/bold blue]")
+        console.print("[bold blue]W8: Section Keys Generator[/bold blue]")
 
         # Find all content.json files
         bucket, prefix = s3.parse_s3_uri(output_prefix)
@@ -66,10 +66,10 @@ class W7SectionKeys(BaseWorker):
         sections_summary = self._build_summary(sections)
 
         # Call Claude
-        client = claude_mod.ClaudeClient(self.settings)
+        client = claude_mod.get_client(self.settings, self.worker_name)
         response = client.call(
-            system=prompts.W7_SYSTEM_PROMPT,
-            user_content=prompts.W7_USER_PROMPT.format(
+            system=prompts.W8_SYSTEM_PROMPT,
+            user_content=prompts.W8_USER_PROMPT.format(
                 sections_json=json.dumps(sections_summary, indent=2, ensure_ascii=False),
             ),
         )
@@ -109,10 +109,120 @@ class W7SectionKeys(BaseWorker):
 
         console.print(f"  [green]Updated {updated}/{len(content_uris)} content files with section_keys[/green]")
 
+        # Generate homework template
+        hw_template_uri = self._generate_homework_template(sections, output_prefix)
+        console.print(f"  [green]Generated homework template: {hw_template_uri}[/green]")
+
         return {
             "sections_processed": updated,
             "normalizations": normalizations,
+            "homework_template_uri": hw_template_uri,
         }
+
+    def _generate_homework_template(self, sections: list[dict], output_prefix: str) -> str:
+        """Generate homework template by aggregating exercise types across all sections."""
+        from collections import Counter
+
+        console.print("\n[bold blue]Generating homework template...[/bold blue]")
+
+        # Get TOC structure to determine hierarchy
+        toc_uri = f"{output_prefix.rstrip('/')}/toc_structured.json"
+        try:
+            toc_data = s3.read_json(toc_uri)
+            level_names = toc_data.get("level_names", ["chapter", "section", "topic"])
+            console.print(f"  Hierarchy levels: {level_names}")
+        except Exception as e:
+            console.print(f"  [yellow]Could not read TOC, using default hierarchy: {e}[/yellow]")
+            level_names = ["chapter", "section", "topic"]
+
+        # Build hierarchy field list (capitalize first letter for display)
+        hierarchy_fields = []
+        for i, level in enumerate(level_names):
+            hierarchy_fields.append({
+                "label": f"{level.capitalize()}:",
+                "level": i,
+                "required": i < 2,  # First two levels required, rest optional
+            })
+
+        # Aggregate exercise types
+        most_likely_counts = Counter()
+        all_exercise_types = set()
+        sections_with_hw = 0
+
+        for section_data in sections:
+            content = section_data["content"]
+
+            # Count most_likely
+            most_likely = content.get("most_likely_hw_exercise_attribute")
+            if most_likely:
+                most_likely_counts[most_likely] += 1
+
+            # Collect all likely types
+            likely_types = content.get("likely_hw_exercise_attributes")
+            if likely_types:
+                all_exercise_types.update(likely_types)
+                sections_with_hw += 1
+
+        # Find the most common exercise type
+        if most_likely_counts:
+            most_common_field, most_common_count = most_likely_counts.most_common(1)[0]
+            console.print(f"  Most common exercise type: '{most_common_field}' (appears in {most_common_count} sections)")
+        else:
+            most_common_field = None
+            most_common_count = 0
+            console.print("  [yellow]No exercise types found[/yellow]")
+
+        # Build default exercise type
+        if most_common_field:
+            default_exercise_type = {
+                "field_name": most_common_field,
+                "display_label": self._field_to_display_label(most_common_field),
+                "appears_in_sections": most_common_count,
+                "is_most_common": True,
+            }
+        else:
+            default_exercise_type = None
+
+        # Build additional exercise types (exclude the most common)
+        additional_types = []
+        for field_name in sorted(all_exercise_types):
+            if field_name != most_common_field:
+                # Count how many sections have this type
+                count = sum(
+                    1 for s in sections
+                    if field_name in s["content"].get("likely_hw_exercise_attributes", [])
+                )
+                additional_types.append({
+                    "field_name": field_name,
+                    "display_label": self._field_to_display_label(field_name),
+                    "appears_in_sections": count,
+                })
+
+        # Sort by frequency
+        additional_types.sort(key=lambda x: x["appears_in_sections"], reverse=True)
+
+        console.print(f"  Additional exercise types: {[t['field_name'] for t in additional_types]}")
+
+        # Build template
+        template = {
+            "hierarchy": hierarchy_fields,
+            "default_exercise_type": default_exercise_type,
+            "additional_exercise_types": additional_types,
+            "total_sections_with_hw": sections_with_hw,
+            "total_sections": len(sections),
+        }
+
+        # Write to top level of output prefix
+        template_uri = f"{output_prefix.rstrip('/')}/homework_template.json"
+        s3.write_json(template, template_uri)
+
+        return template_uri
+
+    def _field_to_display_label(self, field_name: str) -> str:
+        """Convert field_name to display label (e.g., 'review_questions' -> 'Review Questions:')."""
+        # Replace underscores with spaces, capitalize each word, add colon
+        words = field_name.replace("_", " ").split()
+        return " ".join(word.capitalize() for word in words) + ":"
 
     def _build_summary(self, sections: list[dict]) -> list[dict]:
         """Build a compact summary of each section for the LLM.
@@ -170,7 +280,7 @@ class W7SectionKeys(BaseWorker):
                 if attempt < attempts:
                     console.print("  [yellow]No JSON found, requesting correction...[/yellow]")
                     response = client.call(
-                        system=prompts.W7_SYSTEM_PROMPT,
+                        system=prompts.W8_SYSTEM_PROMPT,
                         user_content=f"Your previous response was not valid JSON. "
                         f"Here's what you said (truncated):\n{response[:2000]}\n\n"
                         f"Please respond with ONLY valid JSON.",
@@ -182,7 +292,7 @@ class W7SectionKeys(BaseWorker):
                 if attempt < attempts:
                     console.print("  [yellow]Missing 'sections' array, requesting correction...[/yellow]")
                     response = client.call(
-                        system=prompts.W7_SYSTEM_PROMPT,
+                        system=prompts.W8_SYSTEM_PROMPT,
                         user_content=f"Your response must contain a 'sections' array. "
                         f"Please respond with ONLY valid JSON.",
                     )

@@ -14,7 +14,7 @@ Parameters:
 Globals:
   Function:
     Timeout: 900  # 15 minutes max for Lambda
-    MemorySize: 3072  # 3 GB for PDF processing
+    MemorySize: 3008  # Max Lambda memory (just under 3 GB) for PDF processing
     Environment:
       Variables:
         STAGE: !Ref Stage

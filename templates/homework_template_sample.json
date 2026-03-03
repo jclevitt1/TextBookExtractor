@@ -1,0 +1,44 @@
+{
+  "hierarchy": [
+    {
+      "label": "Chapter:",
+      "level": 0,
+      "required": true
+    },
+    {
+      "label": "Section:",
+      "level": 1,
+      "required": true
+    },
+    {
+      "label": "Topic:",
+      "level": 2,
+      "required": true
+    }
+  ],
+  "default_exercise_type": {
+    "field_name": "guided_practice",
+    "display_label": "Guided Practice (Exercises):",
+    "appears_in_sections": 45,
+    "is_most_common": true
+  },
+  "additional_exercise_types": [
+    {
+      "field_name": "review_questions",
+      "display_label": "Review Questions:",
+      "appears_in_sections": 32
+    },
+    {
+      "field_name": "practice_problems",
+      "display_label": "Practice Problems:",
+      "appears_in_sections": 28
+    },
+    {
+      "field_name": "challenge_problems",
+      "display_label": "Challenge Problems:",
+      "appears_in_sections": 15
+    }
+  ],
+  "total_sections_with_hw": 52,
+  "total_sections": 64
+}

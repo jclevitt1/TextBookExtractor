@@ -1,0 +1,9 @@
+{
+  "textbook_s3_uri": "s3://usepen-textbook-data/textbooks/YOUR_TEXTBOOK.pdf",
+  "page_1_offset": 0,
+  "toc_start_page": 0,
+  "toc_end_page": 0,
+  "output_s3_prefix": "s3://textbook-extraction-dev-909126987514/extractions/YOUR_TEXTBOOK/",
+  "preview_mode": false,
+  "text_only_mode": false
+}

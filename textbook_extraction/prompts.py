@@ -9,17 +9,19 @@ W2_SYSTEM_PROMPT = """You are an expert at reading textbook tables of contents. 
 RULES:
 1. Extract EVERY entry from the TOC — chapters, sections, subsections, units, parts, appendices, everything.
 2. For each entry, report:
-   - "title": the entry text as printed
-   - "page": the printed page number
-   - "level": the visual nesting depth (1 = top-level like chapters/units, 2 = sections, 3 = subsections/topics, etc.)
+   - "title": the entry text as printed (REQUIRED)
+   - "page": the printed page number (STRONGLY RECOMMENDED — include whenever a page number is printed next to the entry. OMIT this field entirely if no page number appears for this entry in the textbook.)
+   - "level": the visual nesting depth (REQUIRED, 1 = top-level like chapters/units, 2 = sections, 3 = subsections/topics, etc.)
 3. Determine level from visual cues: indentation, font size, numbering patterns.
 4. Do NOT infer hierarchy — just report what you see.
 5. Do NOT skip any entries. Be exhaustive.
+6. Do NOT guess or fabricate page numbers. If a chapter heading has no page number printed next to it, omit "page" — do NOT set it to 0.
 
 Respond with ONLY valid JSON:
 {
   "entries": [
-    {"title": "string", "page": int, "level": int}
+    {"title": "string", "page": int, "level": int},
+    {"title": "string (no page printed)", "level": int}
   ]
 }"""
 
@@ -61,6 +63,8 @@ RULES:
 5. page_range[0] = this entry's page. page_range[1] = (next sibling's page - 1), or parent's page_range[1] for the last child.
 6. Children are nested directly inside their parent node alongside title and page_range.
 7. The top-level `page_range` for each root node: ends at (next root's page - 1).
+8. Some entries may NOT have a "page" field (when no page number was printed in the TOC for that entry). For these parent-level entries, INFER page_range from children: page_range[0] = first child's page, page_range[1] computed normally from next sibling or parent.
+9. If an entry like "Chapter X — Continued" appears, merge it with the original chapter — it means the TOC spanned multiple pages. Do NOT create duplicate chapters.
 
 Example output structure:
 {
@@ -97,11 +101,17 @@ W5_SYSTEM_PROMPT = """You are extracting structured content from a specific sect
 
 RULES:
 1. The only REQUIRED field is "title" — the section title.
-2. RECOMMENDED fields (include when present): "examples", "exercises"
-3. Add whatever other fields match the content: "definitions", "theorems", "proofs", "vocabulary", "guided_practice", "applications", "key_concepts", "narrative", "primary_sources", etc.
-4. Structure the content as the textbook presents it. Mirror the book's own organization.
-5. ALL math MUST be in LaTeX notation: $x^2 + 2x + 1$, $\\frac{a}{b}$, $\\sqrt{x}$
-6. Be thorough — capture everything on these pages. Do not summarize.
+2. Add whatever other fields match the content: "definitions", "theorems", "proofs", "examples", "exercises", "vocabulary", "guided_practice", "applications", "key_concepts", "narrative", "review_questions", "practice_problems", "primary_sources", etc.
+3. Do NOT organize by page number. Group content by logical boundaries: a definition block, a worked example, a set of exercises, a narrative explanation, etc. Pages are irrelevant — conceptual structure is what matters.
+4. ALL math MUST be in LaTeX notation: $x^2 + 2x + 1$, $\\frac{a}{b}$, $\\sqrt{x}$
+5. Be thorough — capture everything on these pages. Do not summarize.
+6. Do NOT include page numbers, page references, or page-level grouping anywhere in the output.
+
+HOMEWORK IDENTIFICATION:
+After extracting all content, add these two special fields at the TOP LEVEL of your JSON:
+- "likely_hw_exercise_attributes": array of field names (strings) that contain homework/practice problems (e.g., ["exercises", "review_questions", "practice_problems"])
+- "most_likely_hw_exercise_attribute": the single field name (string) most likely to be assigned as homework (e.g., "exercises")
+If this section has no homework/exercise content at all, set both to null.
 
 Respond with ONLY valid JSON. The schema is flexible — use field names that describe the content."""
 
@@ -111,6 +121,8 @@ Section: {title}
 Location: {path_description}
 Pages shown: PDF pages {start_page}-{end_page}
 
+{consistency_guidance}
+
 Capture everything on these pages. Use LaTeX for all math. Structure the output to match how the textbook presents this material."""
 
 
@@ -118,7 +130,7 @@ Capture everything on these pages. Use LaTeX for all math. Structure the output 
 # Worker 6: Coverage Cleanup (gap extraction)
 # =============================================================================
 
-W6_SYSTEM_PROMPT = """You are extracting content from pages in a textbook that fall outside the named Table of Contents sections. These might be chapter introductions, review sections, cumulative exercises, transition pages, or other material.
+W7_SYSTEM_PROMPT = """You are extracting content from pages in a textbook that fall outside the named Table of Contents sections. These might be chapter introductions, review sections, cumulative exercises, transition pages, or other material.
 
 RULES:
 1. The only REQUIRED field is "title" — determine an appropriate title from the content.
@@ -128,7 +140,7 @@ RULES:
 
 Respond with ONLY valid JSON."""
 
-W6_USER_PROMPT = """Extract the content from these textbook pages that fall between named sections.
+W7_USER_PROMPT = """Extract the content from these textbook pages that fall between named sections.
 
 Chapter: {chapter_title}
 Pages shown: PDF pages {start_page}-{end_page}
@@ -138,10 +150,10 @@ Determine what this content is (intro, review, exercises, etc.) and extract it f
 
 
 # =============================================================================
-# Worker 7: Section Keys Generator
+# Worker 8: Section Keys Generator
 # =============================================================================
 
-W7_SYSTEM_PROMPT = """You are generating metadata descriptors for extracted textbook content. You will see the content from multiple sections. For each section, generate `section_keys` that describe every field in the content.
+W8_SYSTEM_PROMPT = """You are generating metadata descriptors for extracted textbook content. You will see the content from multiple sections. For each section, generate `section_keys` that describe every field in the content.
 
 For each field in a section's content:
 - "type": the data type (str, int, float, bool, list, json)
@@ -168,7 +180,7 @@ Respond with ONLY valid JSON:
   ]
 }"""
 
-W7_USER_PROMPT = """Here are the content files from all extracted sections of a textbook.
+W8_USER_PROMPT = """Here are the content files from all extracted sections of a textbook.
 
 {sections_json}
 

@@ -15,9 +15,13 @@ from ..workers import w1_s3_fetch  # noqa: F401
 from ..workers import w2_toc_raw  # noqa: F401
 from ..workers import w3_toc_structure  # noqa: F401
 from ..workers import w4_granularity  # noqa: F401
+from ..workers import split_manifest  # noqa: F401
 from ..workers import w5_extractor  # noqa: F401
-from ..workers import w6_coverage  # noqa: F401
-from ..workers import w7_section_keys  # noqa: F401
+from ..workers import get_schema_union  # noqa: F401
+from ..workers import merge_results  # noqa: F401
+from ..workers import w6_toc_enrich  # noqa: F401
+from ..workers import w7_coverage  # noqa: F401
+from ..workers import w8_section_keys  # noqa: F401
 
 
 def handler(event, context):

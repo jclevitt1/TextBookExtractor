@@ -1,4 +1,4 @@
-"""Worker 6: Coverage Cleanup — detect and extract uncovered pages.
+"""Worker 7: Coverage Cleanup — detect and extract uncovered pages.
 
 Two phases:
 1. Programmatic gap detection per top-level chapter
@@ -76,10 +76,10 @@ def _get_top_level_chapters(toc_data: dict, page_1_offset: int) -> list[dict]:
 
 
 @register_worker
-class W6Coverage(BaseWorker):
+class W7Coverage(BaseWorker):
     """Detect page coverage gaps and extract missing content."""
 
-    worker_name = "w6_coverage"
+    worker_name = "w7_coverage"
 
     def execute(self, event: dict) -> dict:
         textbook_s3_uri = event["textbook_s3_uri"]
@@ -88,8 +88,10 @@ class W6Coverage(BaseWorker):
         page_1_offset = event["page_1_offset"]
         page_count = event["page_count"]
         output_prefix = event["output_s3_prefix"]
+        text_only_mode = event.get("text_only_mode", False)
 
-        console.print("[bold blue]W6: Coverage Cleanup[/bold blue]")
+        mode_label = "TEXT" if text_only_mode else "VISION"
+        console.print(f"[bold blue]W7: Coverage Cleanup ({mode_label})[/bold blue]")
 
         # Load data
         toc_data = s3.read_json(toc_structured_uri)
@@ -158,12 +160,12 @@ class W6Coverage(BaseWorker):
         if total_gaps > 0:
             console.print(f"\n  Extracting content from {total_gaps} gap(s)...")
             local_path = s3.ensure_local_pdf(textbook_s3_uri)
-            client = claude_mod.ClaudeClient(self.settings)
+            client = claude_mod.get_client(self.settings, self.worker_name)
 
             for ch, gaps in all_gaps:
                 for gap in gaps:
                     result = self._extract_gap(
-                        client, local_path, ch, gap, output_prefix, toc_data,
+                        client, local_path, ch, gap, output_prefix, toc_data, text_only_mode,
                     )
                     gap_results.append(result)
 
@@ -187,6 +189,7 @@ class W6Coverage(BaseWorker):
         gap: dict,
         output_prefix: str,
         toc_data: dict,
+        text_only_mode: bool = False,
     ) -> dict:
         """Extract content from one gap range using LLM."""
         gap_range = gap["pdf_page_range"]
@@ -194,30 +197,48 @@ class W6Coverage(BaseWorker):
         ch_key = chapter["key"]
         ch_title = chapter["title"]
 
+        mode_label = "TEXT" if text_only_mode else "VISION"
         console.print(
-            f"    Extracting {ch_key}/{label} "
+            f"    Extracting {ch_key}/{label} ({mode_label}) "
             f"(PDF pages {gap_range[0]}-{gap_range[1]})..."
         )
 
-        # Render gap pages
-        images = pdf.render_pages(
-            local_path, gap_range[0], gap_range[1], dpi=self.settings.image_dpi,
-        )
-        page_labels = [f"PDF Page {gap_range[0] + i}" for i in range(len(images))]
+        # Call Claude with text or vision mode
+        if text_only_mode:
+            # TEXT MODE: Extract text from PDF pages
+            pages_text = pdf.extract_text(local_path, gap_range[0], gap_range[1])
 
-        # Call Claude
-        user_content = client.build_image_content(
-            images=images,
-            prompt=prompts.W6_USER_PROMPT.format(
+            # Build text-based prompt
+            text_content = ""
+            for i, page_text in enumerate(pages_text):
+                page_num = gap_range[0] + i
+                text_content += f"\n--- PDF Page {page_num} ---\n{page_text}\n"
+
+            user_content = prompts.W7_USER_PROMPT.format(
                 chapter_title=ch_title,
                 start_page=gap_range[0],
                 end_page=gap_range[1],
-            ),
-            page_labels=page_labels,
-        )
+            ) + text_content
+
+        else:
+            # VISION MODE: Render pages as images
+            images = pdf.render_pages(
+                local_path, gap_range[0], gap_range[1], dpi=self.settings.image_dpi,
+            )
+            page_labels = [f"PDF Page {gap_range[0] + i}" for i in range(len(images))]
+
+            user_content = client.build_image_content(
+                images=images,
+                prompt=prompts.W7_USER_PROMPT.format(
+                    chapter_title=ch_title,
+                    start_page=gap_range[0],
+                    end_page=gap_range[1],
+                ),
+                page_labels=page_labels,
+            )
 
         response = client.call(
-            system=prompts.W6_SYSTEM_PROMPT,
+            system=prompts.W7_SYSTEM_PROMPT,
             user_content=user_content,
         )
 

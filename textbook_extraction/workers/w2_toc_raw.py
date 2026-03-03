@@ -70,7 +70,7 @@ class W2TOCRaw(BaseWorker):
         # Try text-first mode
         pages_text = pdf.extract_text(local_path, toc_start, toc_end)
 
-        client = claude_mod.ClaudeClient(self.settings)
+        client = claude_mod.get_client(self.settings, self.worker_name)
 
         if _text_is_clean(pages_text):
             console.print("  [green]Text extraction clean — using text-first mode[/green]")
@@ -174,15 +174,15 @@ class W2TOCRaw(BaseWorker):
                     continue
                 raise ValueError("W2 response missing 'entries' array")
 
-            # Validate entry shape
+            # Validate entry shape (page is optional)
             for i, entry in enumerate(data["entries"]):
-                if "title" not in entry or "page" not in entry or "level" not in entry:
+                if "title" not in entry or "level" not in entry:
                     if attempt < attempts:
                         console.print(f"  [yellow]Entry {i} missing fields, requesting correction...[/yellow]")
                         response = client.call(
                             system=prompts.W2_SYSTEM_PROMPT,
                             user_content=prompts.W2_CORRECTION_PROMPT.format(
-                                error=f"Entry {i} must have 'title', 'page', and 'level' fields. Got: {entry}",
+                                error=f"Entry {i} must have 'title' and 'level' fields. Got: {entry}",
                                 response=response[:2000],
                             ),
                         )

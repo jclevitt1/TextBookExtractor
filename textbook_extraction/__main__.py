@@ -58,13 +58,14 @@ def run_worker(worker_name, input_path, output_path):
 
 
 @cli.command()
-@click.option("--input", "-i", "input_path", required=True, help="Path to pipeline input JSON")
+@click.option("--input", "-i", "input_path", required=True, help="Path to pipeline input JSON (or saved state JSON with --resume)")
 @click.option("--through", "-t", default=None, help="Stop after this worker (e.g. w4, w2_toc_raw)")
+@click.option("--resume", default=None, help="Resume from this worker using saved state as input (e.g. w4, w5)")
 @click.option("--limit", "-l", type=int, default=None, help="W5 fan-out: only process first N units")
 @click.option("--range", "-r", "w5_range", default=None, help="W5 fan-out: process index range (e.g. 5-10, 0-2, 42)")
 @click.option("--output", "-o", "output_path", default=None, help="Write final state JSON to file")
 @click.option("--state-dir", "-s", default=None, help="Dir to save intermediate state after each worker")
-def run_pipeline(input_path, through, limit, w5_range, output_path, state_dir):
+def run_pipeline(input_path, through, resume, limit, w5_range, output_path, state_dir):
     """Run the full pipeline (or partial with --through).
 
     Examples:
@@ -83,6 +84,9 @@ def run_pipeline(input_path, through, limit, w5_range, output_path, state_dir):
 
         # Full pipeline, save intermediate state for debugging
         python -m textbook_extraction run-pipeline -i input.json -s ./debug_state/
+
+        # Resume from W4 using saved state from a previous --through w3 run
+        python -m textbook_extraction run-pipeline -i ./debug/state_after_w3_toc_structure.json --resume w4
     """
     _import_workers()
 
@@ -97,6 +101,7 @@ def run_pipeline(input_path, through, limit, w5_range, output_path, state_dir):
         pipeline_input,
         settings,
         through=through,
+        resume_from=resume,
         limit=limit,
         w5_range=w5_range,
         state_dir=state_dir,
@@ -122,9 +127,13 @@ def _import_workers():
     from .workers import w2_toc_raw  # noqa: F401
     from .workers import w3_toc_structure  # noqa: F401
     from .workers import w4_granularity  # noqa: F401
+    from .workers import split_manifest  # noqa: F401
     from .workers import w5_extractor  # noqa: F401
-    from .workers import w6_coverage  # noqa: F401
-    from .workers import w7_section_keys  # noqa: F401
+    from .workers import get_schema_union  # noqa: F401
+    from .workers import merge_results  # noqa: F401
+    from .workers import w6_toc_enrich  # noqa: F401
+    from .workers import w7_coverage  # noqa: F401
+    from .workers import w8_section_keys  # noqa: F401
 
 
 if __name__ == "__main__":

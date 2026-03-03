@@ -1,12 +1,11 @@
-"""LLM API wrapper with retry logic and token tracking.
+"""Kimi K2.5 API client — uses the openai SDK since Kimi's API speaks the same protocol.
 
-Supports Anthropic (Claude) and OpenAI-compatible providers (Kimi K2.5, etc.)
-via get_client() factory function.
+Drop-in replacement for ClaudeClient — same call() and build_image_content() interface.
 """
 import time
 from typing import Optional
 
-from anthropic import Anthropic
+from openai import OpenAI
 from rich.console import Console
 
 from ..config import Settings
@@ -14,31 +13,18 @@ from ..config import Settings
 console = Console()
 
 
-def get_client(settings: Settings, worker_name: str | None = None):
-    """Factory: return the right LLM client based on per-worker or global provider.
+class KimiClient:
+    """Wrapper around Kimi K2.5 API with retry and token tracking.
 
-    Args:
-        settings: App settings.
-        worker_name: If provided, checks per-worker provider/model overrides first.
+    Kimi's API uses the OpenAI chat completions protocol, so we use the
+    openai SDK pointed at Moonshot's base URL with a Kimi API key.
     """
-    provider = settings.get_worker_provider(worker_name) if worker_name else settings.provider
-    model = settings.get_worker_model(worker_name) if worker_name else settings.model
-
-    if provider == "kimi":
-        from .kimi import KimiClient
-        client = KimiClient(settings, model_override=model)
-        console.print(f"  [bold magenta]LLM: Kimi ({model}) via {settings.openai_compat_base_url}[/bold magenta]")
-        return client
-    client = ClaudeClient(settings, model_override=model)
-    console.print(f"  [bold magenta]LLM: Anthropic ({model})[/bold magenta]")
-    return client
-
-
-class ClaudeClient:
-    """Wrapper around Claude API with retry and token tracking."""
 
     def __init__(self, settings: Settings, model_override: str | None = None):
-        self.client = Anthropic(api_key=settings.anthropic_api_key)
+        self.client = OpenAI(
+            api_key=settings.kimi_api_key,
+            base_url=settings.openai_compat_base_url,
+        )
         self.model = model_override or settings.model
         self.max_retries = settings.max_retries
         self.retry_base_delay = settings.retry_base_delay
@@ -56,13 +42,9 @@ class ClaudeClient:
         user_content: list[dict] | str,
         max_tokens: Optional[int] = None,
     ) -> str:
-        """Send a message to Claude, return raw text response.
+        """Send a message, return raw text response.
 
-        Args:
-            system: System prompt.
-            user_content: Either a string or a list of content blocks
-                (text, image, etc.) for the user message.
-            max_tokens: Max output tokens (defaults to settings.max_tokens).
+        Same signature as ClaudeClient.call().
         """
         if isinstance(user_content, str):
             content = [{"type": "text", "text": user_content}]
@@ -79,21 +61,16 @@ class ClaudeClient:
     ) -> list[dict]:
         """Build user content blocks with labeled images + a text prompt.
 
-        Args:
-            images: List of base64-encoded PNG images.
-            prompt: Text prompt appended after images.
-            page_labels: Optional labels prepended before each image.
+        Uses the OpenAI-style image_url format (data URI with base64).
         """
         content: list[dict] = []
         for i, img_b64 in enumerate(images):
             if page_labels and i < len(page_labels):
                 content.append({"type": "text", "text": f"[{page_labels[i]}]"})
             content.append({
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/png",
-                    "data": img_b64,
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{img_b64}",
                 },
             })
         content.append({"type": "text", "text": prompt})
@@ -103,15 +80,17 @@ class ClaudeClient:
         last_exception = None
         for attempt in range(self.max_retries + 1):
             try:
-                message = self.client.messages.create(
+                response = self.client.chat.completions.create(
                     model=self.model,
                     max_tokens=max_tokens,
-                    system=system,
-                    messages=[{"role": "user", "content": content}],
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": content},
+                    ],
                 )
                 self.total_calls += 1
-                input_tok = message.usage.input_tokens
-                output_tok = message.usage.output_tokens
+                input_tok = getattr(response.usage, "prompt_tokens", 0) or 0
+                output_tok = getattr(response.usage, "completion_tokens", 0) or 0
                 self.total_input_tokens += input_tok
                 self.total_output_tokens += output_tok
 
@@ -120,13 +99,13 @@ class ClaudeClient:
                     f"{input_tok:,} in / {output_tok:,} out tokens[/dim]"
                 )
 
-                return message.content[0].text
+                return response.choices[0].message.content
 
             except Exception as e:
                 error_str = str(e)
                 retryable = any(
                     kw in error_str.lower()
-                    for kw in ["529", "overloaded", "rate", "timeout", "500", "502", "503"]
+                    for kw in ["429", "rate", "timeout", "500", "502", "503", "529", "overloaded"]
                 )
                 if retryable and attempt < self.max_retries:
                     last_exception = e

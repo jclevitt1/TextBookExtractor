@@ -1,0 +1,4 @@
+{
+  "worker": "w8_section_keys",
+  "output_s3_prefix": "s3://textbook-extraction-dev-909126987514/extractions/algebra1/"
+}

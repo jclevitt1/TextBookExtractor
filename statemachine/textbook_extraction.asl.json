@@ -1,5 +1,5 @@
 {
-  "Comment": "Textbook Extraction Pipeline — 7 workers, fan-out on W5",
+  "Comment": "Textbook Extraction Pipeline — 8 workers, W5 hybrid parallel (first 2 sequential, rest parallel)",
   "StartAt": "W1_S3Fetch",
   "States": {
     "W1_S3Fetch": {
@@ -75,20 +75,46 @@
         "output_s3_prefix.$": "$.output_s3_prefix"
       },
       "ResultPath": "$.w4",
-      "Next": "W5_FanOut"
+      "Next": "SplitManifest"
     },
 
-    "W5_FanOut": {
+    "SplitManifest": {
+      "Type": "Task",
+      "Resource": "${WorkerFunctionArn}",
+      "Comment": "Split extraction units into first_two and remaining for hybrid parallel processing",
+      "Parameters": {
+        "worker": "split_manifest",
+        "extraction_units.$": "$.w4.extraction_units",
+        "preview_mode.$": "$.preview_mode",
+        "preview_section_count.$": "$.preview_section_count"
+      },
+      "ResultPath": "$.split_manifest",
+      "Next": "W5_ExtractFirstTwo"
+    },
+
+    "W5_ExtractFirstTwo": {
       "Type": "Map",
-      "ItemsPath": "$.w4.extraction_units",
-      "MaxConcurrency": 10,
+      "Comment": "Extract first 2 sections sequentially to establish schema",
+      "ItemsPath": "$.split_manifest.first_two",
+      "MaxConcurrency": 1,
       "Parameters": {
         "worker": "w5_extractor",
         "textbook_s3_uri.$": "$.textbook_s3_uri",
         "output_s3_prefix.$": "$.output_s3_prefix",
-        "unit.$": "$$.Map.Item.Value"
+        "unit.$": "$$.Map.Item.Value",
+        "text_only_mode.$": "$.text_only_mode"
       },
-      "ResultPath": "$.w5",
+      "Iterator": {
+        "StartAt": "ExtractSectionSequential",
+        "States": {
+          "ExtractSectionSequential": {
+            "Type": "Task",
+            "Resource": "${WorkerFunctionArn}",
+            "End": true
+          }
+        }
+      },
+      "ResultPath": "$.first_two_results",
       "Retry": [
         {
           "ErrorEquals": ["States.TaskFailed"],
@@ -97,19 +123,105 @@
           "BackoffRate": 2.0
         }
       ],
-      "Next": "W6_CoverageCleanup"
+      "Next": "GetSchemaUnion"
     },
 
-    "W6_CoverageCleanup": {
+    "GetSchemaUnion": {
+      "Type": "Task",
+      "Resource": "${WorkerFunctionArn}",
+      "Comment": "Compute union of field names from first 2 sections",
+      "Parameters": {
+        "worker": "get_schema_union",
+        "w5_results.$": "$.first_two_results"
+      },
+      "ResultPath": "$.schema_union",
+      "Next": "CheckRemainingUnits"
+    },
+
+    "CheckRemainingUnits": {
+      "Type": "Choice",
+      "Comment": "Skip parallel processing if no remaining units",
+      "Choices": [
+        {
+          "Variable": "$.split_manifest.total_units",
+          "NumericGreaterThan": 2,
+          "Next": "W5_ExtractRemaining"
+        }
+      ],
+      "Default": "MergeW5Results"
+    },
+
+    "W5_ExtractRemaining": {
+      "Type": "Map",
+      "Comment": "Extract remaining sections in parallel with accumulated schema",
+      "ItemsPath": "$.split_manifest.remaining",
+      "MaxConcurrency": 10,
+      "Parameters": {
+        "worker": "w5_extractor",
+        "textbook_s3_uri.$": "$.textbook_s3_uri",
+        "output_s3_prefix.$": "$.output_s3_prefix",
+        "unit.$": "$$.Map.Item.Value",
+        "previous_attributes.$": "$.schema_union.accumulated_attributes",
+        "text_only_mode.$": "$.text_only_mode"
+      },
+      "Iterator": {
+        "StartAt": "ExtractSectionParallel",
+        "States": {
+          "ExtractSectionParallel": {
+            "Type": "Task",
+            "Resource": "${WorkerFunctionArn}",
+            "End": true
+          }
+        }
+      },
+      "ResultPath": "$.remaining_results",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 15,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "MergeW5Results"
+    },
+
+    "MergeW5Results": {
+      "Type": "Task",
+      "Resource": "${WorkerFunctionArn}",
+      "Comment": "Combine first_two_results and remaining_results into w5",
+      "Parameters": {
+        "worker": "merge_results",
+        "first_two_results.$": "$.first_two_results",
+        "remaining_results.$": "$.remaining_results"
+      },
+      "ResultPath": "$.merge_output",
+      "Next": "CopyW5ToState"
+    },
+
+    "CopyW5ToState": {
+      "Type": "Pass",
+      "Comment": "Copy w5 array into top-level state",
+      "Parameters": {
+        "textbook_s3_uri.$": "$.textbook_s3_uri",
+        "output_s3_prefix.$": "$.output_s3_prefix",
+        "page_1_offset.$": "$.page_1_offset",
+        "w1.$": "$.w1",
+        "w2.$": "$.w2",
+        "w3.$": "$.w3",
+        "w4.$": "$.w4",
+        "w5.$": "$.merge_output.w5"
+      },
+      "Next": "W6_TOCEnrich"
+    },
+
+    "W6_TOCEnrich": {
       "Type": "Task",
       "Resource": "${WorkerFunctionArn}",
       "Parameters": {
-        "worker": "w6_coverage",
-        "textbook_s3_uri.$": "$.textbook_s3_uri",
+        "worker": "w6_toc_enrich",
         "toc_structured_uri.$": "$.w3.toc_structured_uri",
-        "extraction_manifest_uri.$": "$.w4.extraction_manifest_uri",
-        "page_1_offset.$": "$.page_1_offset",
-        "page_count.$": "$.w1.page_count",
+        "w5_results.$": "$.w5",
         "output_s3_prefix.$": "$.output_s3_prefix"
       },
       "ResultPath": "$.w6",
@@ -121,17 +233,42 @@
           "BackoffRate": 2.0
         }
       ],
-      "Next": "W7_SectionKeys"
+      "Next": "W7_CoverageCleanup"
     },
 
-    "W7_SectionKeys": {
+    "W7_CoverageCleanup": {
       "Type": "Task",
       "Resource": "${WorkerFunctionArn}",
       "Parameters": {
-        "worker": "w7_section_keys",
-        "output_s3_prefix.$": "$.output_s3_prefix"
+        "worker": "w7_coverage",
+        "textbook_s3_uri.$": "$.textbook_s3_uri",
+        "toc_structured_uri.$": "$.w3.toc_structured_uri",
+        "extraction_manifest_uri.$": "$.w4.extraction_manifest_uri",
+        "page_1_offset.$": "$.page_1_offset",
+        "page_count.$": "$.w1.page_count",
+        "output_s3_prefix.$": "$.output_s3_prefix",
+        "text_only_mode.$": "$.text_only_mode"
       },
       "ResultPath": "$.w7",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Next": "W8_SectionKeys"
+    },
+
+    "W8_SectionKeys": {
+      "Type": "Task",
+      "Resource": "${WorkerFunctionArn}",
+      "Parameters": {
+        "worker": "w8_section_keys",
+        "output_s3_prefix.$": "$.output_s3_prefix"
+      },
+      "ResultPath": "$.w8",
       "Retry": [
         {
           "ErrorEquals": ["States.TaskFailed"],

@@ -1,0 +1,9 @@
+{
+  "textbook_s3_uri": "s3://usepen-textbook-data/textbooks/algebra1.pdf",
+  "page_1_offset": 12,
+  "toc_start_page": 2,
+  "toc_end_page": 7,
+  "output_s3_prefix": "s3://textbook-extraction-dev-909126987514/extractions/algebra1/",
+  "preview_mode": false,
+  "text_only_mode": false
+}

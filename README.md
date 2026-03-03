@@ -1,6 +1,6 @@
 # Textbook Extraction v2
 
-Structured data extraction from textbook PDFs using a 7-worker pipeline. Each worker is independently testable via CLI and orchestrated by AWS Step Functions in production.
+Structured data extraction from textbook PDFs using an 8-worker pipeline. Each worker is independently testable via CLI and orchestrated by AWS Step Functions in production.
 
 ## Setup
 
@@ -36,8 +36,9 @@ W2: TOC Raw Extract   (LLM)          → flat list of TOC entries
 W3: TOC Structure     (LLM)          → nested hierarchy with self-describing keys
 W4: Granularity       (programmatic)  → fan-out manifest of extraction units
 W5: Granular Extract  (LLM fan-out)  → content.json per leaf section
-W6: Coverage Cleanup  (prog + LLM)   → detects/extracts uncovered pages
-W7: Section Keys      (LLM batch)    → self-describing metadata per section
+W6: TOC Enrich        (programmatic)  → merge W5 results back into TOC
+W7: Coverage Cleanup  (prog + LLM)   → detects/extracts uncovered pages
+W8: Section Keys      (LLM batch)    → self-describing metadata per section
 ```
 
 ## Pipeline Input
@@ -293,12 +294,40 @@ python -m textbook_extraction run-worker w5_extractor -i w5_input.json
 - `examples` and `exercises` are present when the textbook has them
 - Nothing is summarized or abbreviated — full content extraction
 
-### W6: Coverage Cleanup
+### W6: TOC Enrich
+
+Merges W5 extraction results back into the TOC structure. Requires W3 and all W5 outputs.
+
+```bash
+cat > w6_input.json << 'EOF'
+{
+  "toc_structured_uri": "s3://your-output-bucket/extractions/algebra1/toc_structured.json",
+  "w5_results": [...],
+  "output_s3_prefix": "s3://your-output-bucket/extractions/algebra1/"
+}
+EOF
+
+python -m textbook_extraction run-worker w6_toc_enrich -i w6_input.json
+```
+
+**Expected output:**
+```json
+{
+  "toc_enriched_uri": "s3://.../toc_structured.json",
+  "enriched_count": 85
+}
+```
+
+**What to check in updated `toc_structured.json`:**
+- Every leaf node now has a `content_uri` field pointing to its `content.json`
+- All W5 extraction results are linked into the TOC hierarchy
+
+### W7: Coverage Cleanup
 
 Detects uncovered pages and extracts gap content. Requires W3, W4, and all W5 outputs.
 
 ```bash
-cat > w6_input.json << 'EOF'
+cat > w7_input.json << 'EOF'
 {
   "textbook_s3_uri": "s3://your-bucket/textbooks/algebra1.pdf",
   "toc_structured_uri": "s3://your-output-bucket/extractions/algebra1/toc_structured.json",
@@ -309,7 +338,7 @@ cat > w6_input.json << 'EOF'
 }
 EOF
 
-python -m textbook_extraction run-worker w6_coverage -i w6_input.json
+python -m textbook_extraction run-worker w7_coverage -i w7_input.json
 ```
 
 **Expected output:**
@@ -333,18 +362,18 @@ python -m textbook_extraction run-worker w6_coverage -i w6_input.json
 - Content matches the actual PDF pages
 - Written to `chapter N/additional section N/content.json`
 
-### W7: Section Keys Generator
+### W8: Section Keys Generator
 
-Generates self-describing metadata for all content files. Requires all W5 + W6 outputs.
+Generates self-describing metadata for all content files. Requires all W5 + W7 outputs.
 
 ```bash
-cat > w7_input.json << 'EOF'
+cat > w8_input.json << 'EOF'
 {
   "output_s3_prefix": "s3://your-output-bucket/extractions/algebra1/"
 }
 EOF
 
-python -m textbook_extraction run-worker w7_section_keys -i w7_input.json
+python -m textbook_extraction run-worker w8_section_keys -i w8_input.json
 ```
 
 **Expected output:**
@@ -389,10 +418,13 @@ python -m textbook_extraction run-pipeline -i input.json --through w5 --range 0-
 # 7. Full extraction (when confident)
 python -m textbook_extraction run-pipeline -i input.json --through w5
 
-# 8. Run W6 for coverage cleanup
+# 8. Run W6 to enrich TOC with content URIs
 python -m textbook_extraction run-pipeline -i input.json --through w6
 
-# 9. Run W7 for section keys
+# 9. Run W7 for coverage cleanup (gap detection)
+python -m textbook_extraction run-pipeline -i input.json --through w7
+
+# 10. Run W8 for section keys (full pipeline)
 python -m textbook_extraction run-pipeline -i input.json
 ```
 

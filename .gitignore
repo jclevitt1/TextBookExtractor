@@ -8,3 +8,14 @@ output/
 .DS_Store
 .aws-sam/
 *.egg-info/
+
+# Debug and state files
+debug/
+state_*.json
+*_state/
+*.log
+
+# Temporary test files
+test_textbooks/
+input.json
+w*_input.json

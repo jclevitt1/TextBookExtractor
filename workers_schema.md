@@ -331,12 +331,49 @@ Example `content.json`:
 - Receives full `path` context so Claude knows where this unit sits in the hierarchy
 - All math in LaTeX notation
 - These run in parallel (fan-out from Worker 4's extraction_units)
-- No `section_keys` here — that's Worker 7's job
+- No `section_keys` here — that's Worker 8's job
 - Claude should mirror the textbook's own structure, not impose a generic schema
 
 ---
 
-## Worker 6: Coverage Cleanup
+## Worker 6: TOC Enrich
+
+**LLM**: No. Pure programmatic.
+
+**Purpose**: Merge W5's `content_uri` values back into `toc_structured.json` leaf nodes. After W5 extracts content and writes `content.json` files, this worker reads W5's results and sets `content_uri` on each matching leaf node in the TOC.
+
+**Input**:
+```json
+{
+  "toc_structured_uri": "s3://bucket/.../toc_structured.json",
+  "w5_results": [
+    { "content_uri": "s3://bucket/.../chapter 1/section 1/topic 1/content.json", "title": "The Basics of Sets", "output_path": "chapter 1/section 1/topic 1/" },
+    { "content_uri": "s3://bucket/.../chapter 1/section 1/topic 2/content.json", "title": "Subsets of the Real Numbers", "output_path": "chapter 1/section 1/topic 2/" }
+  ],
+  "output_s3_prefix": "s3://output-bucket/extraction-run-id/"
+}
+```
+
+**Output**:
+```json
+{
+  "toc_structured_uri": "s3://bucket/.../toc_structured.json",
+  "sections_enriched": 127,
+  "sections_total": 130,
+  "sections_skipped": 3
+}
+```
+
+**Notes**:
+- Runs immediately after W5 fan-out completes
+- Walks the TOC tree recursively, matching leaf nodes to W5 results by `output_path`
+- Writes the enriched TOC back to the same `toc_structured_uri` in S3
+- Downstream workers (W7 coverage, W8 section_keys) benefit from having `content_uri` on leaf nodes
+- Skipped nodes = leaf nodes with no matching W5 result (e.g., W5 was run with `--limit` or `--range`)
+
+---
+
+## Worker 7: Coverage Cleanup
 
 **LLM**: Yes (for extracting gap content).
 
@@ -423,7 +460,7 @@ The TOC structured JSON is also updated with these additional sections:
 ```
 
 **Notes**:
-- Runs AFTER all Worker 5 invocations complete
+- Runs AFTER Worker 6 (TOC Enrich)
 - Gap detection is programmatic; gap content extraction uses LLM (same as Worker 5)
 - Gap extractions could fan-out in parallel if multiple gaps exist
 - `additional section N` numbering is sequential per chapter
@@ -432,13 +469,13 @@ The TOC structured JSON is also updated with these additional sections:
 
 ---
 
-## Worker 7: Section Keys Generator
+## Worker 8: Section Keys Generator
 
 **LLM**: Yes.
 
-**Purpose**: Take the raw content files from ALL Worker 5 + Worker 6 runs, generate self-describing `section_keys` metadata for each. Ensures consistency across sections by seeing the full picture.
+**Purpose**: Take the raw content files from ALL Worker 5 + Worker 7 runs, generate self-describing `section_keys` metadata for each. Ensures consistency across sections by seeing the full picture.
 
-**Input**: All `content.json` files from the output folder tree (both Worker 5 leaf extractions and Worker 6 gap extractions).
+**Input**: All `content.json` files from the output folder tree (both Worker 5 leaf extractions and Worker 7 gap extractions).
 
 **Output**: Updated `content.json` files with `section_keys` added, OR separate `keys.json` files alongside each `content.json`.
 
@@ -482,7 +519,7 @@ The TOC structured JSON is also updated with these additional sections:
 ```
 
 **Notes**:
-- Runs AFTER Worker 6 (sees everything: Worker 5 leaf content + Worker 6 gap content)
+- Runs AFTER Worker 7 (sees everything: Worker 5 leaf content + Worker 7 gap content)
 - Sees all sections → can normalize inconsistent field names across sections (e.g., "exercises" vs "practice_problems" → standardize)
 - `scalar`: true = single value (str, int, bool), false = collection (list, object)
 - Non-scalar fields include `list_element_type` + `sample_list_element` to describe shape
@@ -536,6 +573,13 @@ Pipeline Input
          ▼ (collect all)
 ┌────────────────────┐
 │  Worker 6          │
+│  TOC Enrich        │
+│  (programmatic)    │
+└────────┬───────────┘
+         │
+         ▼
+┌────────────────────┐
+│  Worker 7          │
 │  Coverage Cleanup  │
 │  (programmatic     │
 │   + LLM for gaps)  │
@@ -543,7 +587,7 @@ Pipeline Input
          │
          ▼
 ┌────────────────────┐
-│  Worker 7          │
+│  Worker 8          │
 │  Section Keys      │
 │  Generator         │
 │  (LLM: batch pass) │
@@ -565,7 +609,8 @@ Pipeline Input
 
 - Step Functions handles retry per worker
 - Fan-out parallelism for Worker 5 bounded by Claude API rate limits
-- Worker 6 detects gaps, extracts content from uncovered pages (may fan-out for multiple gaps)
-- Worker 7 runs once after Worker 6 (sees full picture including gap content for consistency)
+- Worker 6 enriches TOC with content_uri from W5 results (no LLM)
+- Worker 7 detects gaps, extracts content from uncovered pages (may fan-out for multiple gaps)
+- Worker 8 runs once after Worker 7 (sees full picture including gap content for consistency)
 - Each worker independently testable via CLI
 - State visible in Step Functions console
